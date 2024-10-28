@@ -1,0 +1,145 @@
+---
+title: "M74 priori ajatusjoksu"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r dir-set, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r librarys, include=FALSE}
+library(tidyverse)
+library(runjags)
+library(readxl)
+```
+
+
+## Esimerkki 
+
+Ladataan data ja vähän ihmetellään. Luodaan samalla logTIAM -sarake tiamiinin
+logaritmia varten.
+```{r data, warning =F}
+
+data_r <- read_xlsx("DATA/Finnish_M74_data-2022_paivitetty_TPa_21_01_2023.xlsx",
+                  sheet = "Data")
+
+data <- data_r %>% 
+  select(YSFM = YSFM, TIAM = `TIAM_nmol/g`) %>% 
+  filter(!is.na(YSFM) & !is.na(TIAM)) %>% 
+  mutate(YSFM = YSFM/100,
+         logTIAM = log(TIAM))
+
+```
+
+Katsellaan vähän miltä näyttää verrattuna logaritmoimattomaan tiamiiniin.
+
+```{r plot}
+
+data %>%
+  ggplot() +
+  geom_point(aes(x = TIAM, y = YSFM), col = "red")+
+  ggtitle("TIAM")
+
+data %>%
+  ggplot() +
+  geom_point(aes(x = logTIAM, y = YSFM), col = "blue")+
+  ggtitle("logTIAM")
+
+```
+
+Logaritmoitu näyttää levenneen ja voisi toimia paremmin logisteisessa 
+regressiossa.
+
+Tutkitaan logTIAM akselia, jolla muutos 0-1 välillä tulee tapahtumaan.
+
+```{r range}
+
+data$logTIAM %>% summary
+
+```
+
+
+Noin -2.9 - 2.6 voisi olla kiinnostava väli sovittaa "s-käyrää". 
+Luodaan simuloitu akseli kyseiselle välille.
+
+```{r sim_x}
+
+sim_x <- seq(-2.9, 2.6, by = 0.01)
+
+```
+
+Jotta s-käyrää voidaan sovittaa tarvitaan expit-funktio ja rakenne logistista 
+regressiota varten. Kirjoitan tässä funktiona, jotta helpompi toistaa kokeillen
+erilaisia arvoja
+
+```{r functions}
+
+expit <- function(x) 1/(1+exp(-x))
+
+logReg <- function(a, b, x){
+  expit(a + b * x)
+}
+
+```
+
+Nyt alkaa arvaiu, kokeillaan ensin ihan raakasti a = 0 ja b = 1
+
+```{r guess1}
+
+#   sovitetaan todella raaka versio logististesta regressiosta 
+#   ja plotataan saatu käyrä
+
+g1 <- logReg(a = 0, b = 1, x = sim_x)
+
+plot(x = sim_x, y = g1, type = 'l',
+     xlab = "logTIAM", ylab = "YSFM")
+
+
+```
+
+Ei näytä hyvälle. Ilmiöstä tiedetään sen verran, että tiamiini ja logtiamiini
+arvon kasvaessa, kuolleisuus pienenee. logistisen regression yhteydessä tämä 
+tarkoittaa, että b tulee olla negatiivinen.
+
+Kokeillaan uutta arvausta
+
+```{r guess2}
+
+
+g2 <- logReg(a = 0, b = -1, x = sim_x)
+
+plot(x = sim_x, y = g2, type = 'l',
+     xlab = "logTIAM", ylab = "YSFM")
+
+
+```
+
+Näyttää jo enemmän oikealle. Tästä eteenpäin kunnollinen simulionti on 
+kätevintä tehdä jagsissa. Kirjoitetaan yksinkertainen malli, jonka avulla 
+priorit voidaan hioa:
+
+```{r model}
+
+mod <- "model{
+for(i in 1:n){
+
+logit(y[i]) = a + b * x[i] + e
+
+}
+
+a ~ dnorm(0,1)
+#   beta tulee olla negatiivinen 
+b = -b_r
+b_r ~ dlnorm(0,1)
+
+e ~ dnorm(0,1)
+}"
+
+
+res <- run.jags(mod, monitor = c("y", "a", "b", "e"), data = list(x = sim_x,
+                                                                  n = length(sim_x)))
+
+
+```
